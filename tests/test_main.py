@@ -1,7 +1,7 @@
 import pytest
 from src.api.routes import api_bp
 from src.models.llm_model import LLMModel, EmbeddingModel
-from src.rag.rag_pipeline import RAGPipeline
+from src.dataIngestion.rag_pipeline import RAGPipeline
 
 class TestLLMModel:
     """Test cases for LLM Model."""
