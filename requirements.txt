@@ -58,5 +58,8 @@ uvicorn>=0.23.0
 # Development
 pytest>=7.4.0
 
+# Extra Tools
+rapidfuzz>=1.10.6
+
 # Local Package (edit mode)
 -e .
