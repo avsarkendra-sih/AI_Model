@@ -1,303 +1,212 @@
 """
 Data preparation class for loading, cleaning, and preprocessing job posting data.
 """
-
 import pandas as pd
-from typing import Dict, List, Optional, Tuple
-import json
+from typing import Optional, Dict, Any
 import sys
 import os
-
-# Add the project root to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 from config.paths import RAW_DATA_DIR, PROCESSED_DATA_DIR, RAW_DATA_FILE, PROCESSED_DATA_FILE, ColumnNames
 from preprocessing.schema import JobPostingSchema
-from utils.logger import setup_logger
-from utils.helper import safe_literal_eval, clean_text, handle_missing_values
+from utils.logger import BaseLogger, DataValidator, DataSummarizer
+from utils.helper import PreprocessingPipeline
+from preprocessing.base import BaseDataProcessor, DataLoader, DataSaver
 
-class DataPreparer:
-    """Class to prepare job posting data for the recommendation system."""
-    
+# Add project root to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+class JobPostingDataPreparer(BaseDataProcessor):
+    """Specialized data preparer for job posting data using OOP principles."""
+
     def __init__(self, data_path: Optional[str] = None):
-        """
-        Initialize the DataPreparer.
-        
-        Args:
-            data_path (str, optional): Path to raw data file. If None, uses default path.
-        """
-        self.logger = setup_logger("DataPreparer")
-        self.data_path = data_path or (RAW_DATA_DIR / RAW_DATA_FILE)
-        self.df = None
-        self.processed_df = None
-        
-        self.logger.info("DataPreparer initialized")
-    
-    def load_data(self) -> pd.DataFrame:
-        """
-        Load raw data from CSV file.
-        
-        Returns:
-            pd.DataFrame: Loaded dataframe
-            
-        Raises:
-            FileNotFoundError: If the data file doesn't exist
-        """
-        try:
-            self.logger.info(f"Loading data from {self.data_path}")
-            self.df = pd.read_csv(self.data_path)
-            self.logger.info(f"Successfully loaded data with shape: {self.df.shape}")
-            return self.df
-        except FileNotFoundError:
-            self.logger.error(f"Data file not found at {self.data_path}")
-            raise
-    
-    def validate_data(self, df: pd.DataFrame) -> Tuple[bool, List[str]]:
-        """
-        Validate data against the schema and check for data quality issues.
-        
-        Args:
-            df (pd.DataFrame): Dataframe to validate
-            
-        Returns:
-            Tuple[bool, List[str]]: (is_valid, list_of_errors)
-        """
-        errors = []
-        
-        # Check required columns (including Duration and JobType)
-        required_columns = [ColumnNames.COMPANY, ColumnNames.TITLE, ColumnNames.SKILLS, 
-                           ColumnNames.LOCATION, ColumnNames.MODE, ColumnNames.DESCRIPTION,
-                           ColumnNames.DURATION, ColumnNames.JOB_TYPE]
-        
-        missing_columns = [col for col in required_columns if col not in df.columns]
-        if missing_columns:
-            errors.append(f"Missing required columns: {missing_columns}")
-        
-        # Check for missing values in critical columns
-        for col in required_columns:
-            if col in df.columns and df[col].isnull().any():
-                null_count = df[col].isnull().sum()
-                errors.append(f"Column {col} has {null_count} missing values")
-        
-        # Validate a sample of rows against the schema
-        sample_size = min(10, len(df))
-        for idx, row in df.head(sample_size).iterrows():
-            try:
-                # Convert to dict and prepare for validation
-                row_dict = row.to_dict()
-                # Handle skills field
-                row_dict['skills'] = safe_literal_eval(row_dict.get(ColumnNames.SKILLS, []))
-                row_dict['company'] = row_dict.get(ColumnNames.COMPANY)
-                row_dict['title'] = row_dict.get(ColumnNames.TITLE)
-                row_dict['location'] = row_dict.get(ColumnNames.LOCATION)
-                row_dict['mode'] = row_dict.get(ColumnNames.MODE)
-                row_dict['description'] = row_dict.get(ColumnNames.DESCRIPTION)
-                row_dict['special_requirements'] = row_dict.get(ColumnNames.SPECIAL_REQS, "")
-                row_dict['duration'] = row_dict.get(ColumnNames.DURATION)
-                row_dict['job_type'] = row_dict.get(ColumnNames.JOB_TYPE)
-                row_dict['job_id'] = "temp_id"  # Temporary ID for validation
-                
-                # Validate against schema
-                JobPostingSchema(**row_dict)
-            except Exception as e:
-                errors.append(f"Validation error in row {idx}: {str(e)}")
-        
-        is_valid = len(errors) == 0
-        return is_valid, errors
-    
-    def clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Clean the raw data by handling missing values and standardizing formats.
-        
-        Args:
-            df (pd.DataFrame): Raw dataframe to clean
-            
-        Returns:
-            pd.DataFrame: Cleaned dataframe
-        """
-        self.logger.info("Starting data cleaning")
-        
-        # Create a copy to avoid modifying the original
-        cleaned_df = df.copy()
-        
-        # Handle missing values
-        cleaned_df = handle_missing_values(cleaned_df, strategy="fill")
-        
-        # Clean text fields
-        text_columns = [ColumnNames.DESCRIPTION, ColumnNames.SPECIAL_REQS, ColumnNames.TITLE]
-        for col in text_columns:
-            if col in cleaned_df.columns:
-                cleaned_df[col] = cleaned_df[col].apply(clean_text)
-        
-        # Standardize skills format
-        if ColumnNames.SKILLS in cleaned_df.columns:
-            cleaned_df[ColumnNames.SKILLS] = cleaned_df[ColumnNames.SKILLS].apply(
-                lambda x: safe_literal_eval(x) if isinstance(x, str) else x
-            )
-        
-        # Standardize mode values
-        mode_mapping = {
-            'remote': 'Online',
-            'hybrid': 'Hybrid',
-            'offline': 'Offline',
-            'on-site': 'Offline',
-            'online': 'Online'
+        super().__init__(data_path or str(RAW_DATA_DIR / RAW_DATA_FILE), "JobPostingDataPreparer")
+
+        # Initialize components
+        self.data_loader = DataLoader(self.logger)
+        self.data_saver = DataSaver(self.logger)
+        self.validator = DataValidator(self.logger)
+        self.summarizer = DataSummarizer()
+        self.pipeline = PreprocessingPipeline()
+
+        # Configuration
+        self.config = self._get_configuration()
+
+        self.logger.info("JobPostingDataPreparer initialized with OOP design")
+
+    def _get_configuration(self) -> Dict[str, Any]:
+        """Get job posting specific configuration."""
+        return {
+            'required_columns': [
+                ColumnNames.COMPANY, ColumnNames.TITLE, ColumnNames.SKILLS,
+                ColumnNames.LOCATION, ColumnNames.MODE, ColumnNames.DESCRIPTION,
+                ColumnNames.DURATION, ColumnNames.JOB_TYPE
+            ],
+            'summary_config': {
+                "companies_count": ColumnNames.COMPANY,
+                "job_types_count": ColumnNames.JOB_TYPE,
+                "locations_count": ColumnNames.LOCATION,
+                "modes_distribution": ColumnNames.MODE,
+                "avg_skills_per_job": 'skills_count',
+                "avg_duration": ColumnNames.DURATION
+            },
+            'processing_config': {
+                'text_columns': [ColumnNames.DESCRIPTION, ColumnNames.SPECIAL_REQS, ColumnNames.TITLE],
+                'work_mode_column': ColumnNames.MODE,
+                'skills_column': ColumnNames.SKILLS,
+                'required_columns': [
+                    ColumnNames.COMPANY, ColumnNames.TITLE, ColumnNames.SKILLS,
+                    ColumnNames.LOCATION, ColumnNames.MODE, ColumnNames.DESCRIPTION,
+                    ColumnNames.DURATION, ColumnNames.JOB_TYPE
+                ]
+            }
         }
-        
-        if ColumnNames.MODE in cleaned_df.columns:
-            cleaned_df[ColumnNames.MODE] = cleaned_df[ColumnNames.MODE].str.lower().map(
-                lambda x: mode_mapping.get(x, x.capitalize())
-            )
-        
-        self.logger.info("Data cleaning completed")
-        return cleaned_df
-    
-    def preprocess_data(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Preprocess the data for use in the recommendation system.
-        
-        Args:
-            df (pd.DataFrame): Cleaned dataframe to preprocess
-            
-        Returns:
-            pd.DataFrame: Preprocessed dataframe with additional features
-        """
-        self.logger.info("Starting data preprocessing")
-        
-        # Create a copy to avoid modifying the original
-        processed_df = df.copy()
-        
-        # Add a unique ID for each job posting
-        processed_df['job_id'] = [f"{i:08x}" for i in range(1, len(processed_df) + 1)]
-        
-        # Extract skills count
-        if ColumnNames.SKILLS in processed_df.columns:
-            processed_df['skills_count'] = processed_df[ColumnNames.SKILLS].apply(
-                lambda x: len(x) if isinstance(x, list) else 0
-            )
-        
-        # Add text length features
-        if ColumnNames.DESCRIPTION in processed_df.columns:
-            processed_df['description_length'] = processed_df[ColumnNames.DESCRIPTION].apply(
-                lambda x: len(x.split()) if isinstance(x, str) else 0
-            )
-        
-        self.logger.info("Data preprocessing completed")
+
+    def load_data(self) -> pd.DataFrame:
+        """Load job posting data."""
+        self._raw_data = self.data_loader.load_csv(self.data_path)
+        return self._raw_data
+
+    def validate_data(self, df: pd.DataFrame) -> bool:
+        """Validate loaded data against job posting schema."""
+        def schema_validator(row):
+            """Validate individual row against JobPostingSchema."""
+            row_dict = {
+                'skills': row.get(ColumnNames.SKILLS, []),
+                'company': row.get(ColumnNames.COMPANY),
+                'title': row.get(ColumnNames.TITLE),
+                'location': row.get(ColumnNames.LOCATION),
+                'mode': row.get(ColumnNames.MODE),
+                'description': row.get(ColumnNames.DESCRIPTION),
+                'special_requirements': row.get(ColumnNames.SPECIAL_REQS, ""),
+                'duration': row.get(ColumnNames.DURATION),
+                'job_type': row.get(ColumnNames.JOB_TYPE),
+                'job_id': "temp_id"
+            }
+            JobPostingSchema(**row_dict)
+
+        is_valid, errors = self.validator.validate_schema(
+            df, self.config['required_columns'], schema_validator
+        )
+
+        if not is_valid:
+            self.logger.warning(f"Data validation completed with issues: {len(errors)} errors found")
+        else:
+            self.logger.info("Data validation passed successfully")
+
+        return is_valid
+
+    def process_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Process job posting data using the preprocessing pipeline."""
+        self.logger.info("Starting data processing with OOP pipeline")
+        processed_df = self.pipeline.process_dataframe(df, self.config['processing_config'])
+        # Log processing statistics
+        stats = self.pipeline.get_processing_stats()
+        self.logger.info(f"Processing completed. Stats: {stats}")
+
         return processed_df
-    
+
     def prepare_data(self, save_processed: bool = True) -> pd.DataFrame:
         """
-        Complete data preparation pipeline.
-        
+        Complete data preparation pipeline using OOP approach.
         Args:
-            save_processed (bool): Whether to save the processed data to disk
-            
+            save_processed: Whether to save the processed data
         Returns:
-            pd.DataFrame: Prepared dataframe ready for the recommendation system
+            Processed DataFrame
         """
+        self.logger.info("Starting complete data preparation pipeline")
+
         # Load data
         raw_df = self.load_data()
-        
-        # Validate data
-        is_valid, errors = self.validate_data(raw_df)
-        if not is_valid:
-            self.logger.warning(f"Data validation issues found: {errors}")
-        
-        # Clean data
-        cleaned_df = self.clean_data(raw_df)
-        
-        # Preprocess data
-        self.processed_df = self.preprocess_data(cleaned_df)
-        
-        # Save processed data
+
+        # Validate data (non-blocking)
+        self.validate_data(raw_df)
+
+        # Process data
+        self._processed_data = self.process_data(raw_df)
+
+        # Save if requested
         if save_processed:
             self.save_processed_data()
-        
-        self.logger.info("Data preparation completed successfully")
-        return self.processed_df
-    
-    def save_processed_data(self, file_path: Optional[str] = None) -> None:
+
+        self.logger.info("Data preparation pipeline completed successfully")
+        return self._processed_data
+
+    def save_processed_data(self, file_path: Optional[str] = None, format_type: str = "pickle") -> None:
         """
-        Save the processed data to disk.
-        
+        Save processed data using the data saver.
         Args:
-            file_path (str, optional): Path to save the processed data. 
-                                      If None, uses default path.
+            file_path: Custom file path (optional)
+            format_type: Format to save in ('pickle' or 'csv')
         """
-        if self.processed_df is None:
+        if self._processed_data is None:
             self.logger.error("No processed data to save. Run prepare_data() first.")
             return
-        
-        save_path = file_path or (PROCESSED_DATA_DIR / PROCESSED_DATA_FILE)
-        
-        # Ensure directory exists
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save as pickle to preserve data types
-        self.processed_df.to_pickle(save_path)
-        self.logger.info(f"Processed data saved to {save_path}")
-    
-    def get_data_summary(self) -> Dict:
+
+        save_path = file_path or str(PROCESSED_DATA_DIR / PROCESSED_DATA_FILE)
+
+        if format_type.lower() == "pickle":
+            self.data_saver.save_to_pickle(self._processed_data, save_path)
+        elif format_type.lower() == "csv":
+            csv_path = save_path.replace('.pkl', '.csv')
+            self.data_saver.save_to_csv(self._processed_data, csv_path)
+        else:
+            raise ValueError(f"Unsupported format: {format_type}")
+
+    def get_data_summary(self, print_summary: bool = False) -> Dict[str, Any]:
         """
-        Generate a summary of the processed data.
-        
+        Generate comprehensive data summary.
+        Args:
+            print_summary: Whether to print formatted summary
         Returns:
-            Dict: Summary statistics of the data
+            Summary dictionary
         """
-        if self.processed_df is None:
-            self.logger.error("No processed data available. Run prepare_data() first.")
+        if self._processed_data is None:
+            self.logger.warning("No processed data available for summary")
             return {}
-        
-        summary = {
-            "total_jobs": len(self.processed_df),
-            "companies_count": self.processed_df[ColumnNames.COMPANY].nunique(),
-            "job_types_count": self.processed_df[ColumnNames.JOB_TYPE].nunique() if ColumnNames.JOB_TYPE in self.processed_df.columns else 0,
-            "locations_count": self.processed_df[ColumnNames.LOCATION].nunique(),
-            "modes_distribution": self.processed_df[ColumnNames.MODE].value_counts().to_dict() if ColumnNames.MODE in self.processed_df.columns else {},
-            "avg_skills_per_job": self.processed_df['skills_count'].mean() if 'skills_count' in self.processed_df.columns else 0,
-            "avg_duration": self.processed_df[ColumnNames.DURATION].mean() if ColumnNames.DURATION in self.processed_df.columns else 0
-        }
-        
+
+        summary = self.summarizer.generate_summary(
+            self._processed_data,
+            self.config['summary_config']
+        )
+
+        if print_summary:
+            self.summarizer.print_summary(summary, "JOB POSTING DATA SUMMARY")
+
         return summary
 
+    def get_sample_data(self, n_rows: int = 3) -> Optional[pd.DataFrame]:
+        """Get sample of processed data."""
+        if self._processed_data is None:
+            return None
+        return self._processed_data.head(n_rows)
+
+# Factory function for backward compatibility
+def create_job_posting_preparer(data_path: Optional[str] = None) -> JobPostingDataPreparer:
+    """Factory function to create JobPostingDataPreparer instance."""
+    return JobPostingDataPreparer(data_path)
+
 if __name__ == "__main__":
-    """Main block to test the data preparation pipeline."""
+    """Main execution block demonstrating OOP usage."""
     import logging
-    
-    # Set up logging to see detailed output
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    # Initialize the data preparer
-    preparer = DataPreparer()
-    
+    logging.basicConfig(level=logging.INFO)
+
+    # Create preparer instance
+    preparer = JobPostingDataPreparer()
+
     try:
-        # Run the complete data preparation pipeline
+        # Run complete pipeline
         processed_data = preparer.prepare_data(save_processed=True)
-        
-        # Get and display data summary
-        summary = preparer.get_data_summary()
-        
-        print("\n" + "="*50)
-        print("DATA PREPARATION SUMMARY")
-        print("="*50)
-        print(f"Total jobs processed: {summary['total_jobs']}")
-        print(f"Unique companies: {summary['companies_count']}")
-        print(f"Unique job types: {summary['job_types_count']}")
-        print(f"Unique locations: {summary['locations_count']}")
-        print("Work mode distribution:")
-        for mode, count in summary['modes_distribution'].items():
-            print(f"  {mode}: {count}")
-        print(f"Average skills per job: {summary['avg_skills_per_job']:.2f}")
-        print(f"Average duration: {summary['avg_duration']:.2f} months")
-        print("="*50)
-        
-        # Display a sample of the processed data
-        print("\nSAMPLE OF PROCESSED DATA:")
-        print(processed_data.head(3).to_string())
-        
-        print("\nData preparation completed successfully!")
-        
+
+        # Generate and display summary
+        summary = preparer.get_data_summary(print_summary=True)
+
+        # Show sample data
+        sample = preparer.get_sample_data(3)
+        if sample is not None:
+            print(f"\nSample processed data:\n{sample.to_string()}")
+
+        print("\n✅ Data preparation completed successfully using OOP approach!")
+
     except Exception as e:
-        print(f"Error during data preparation: {str(e)}")
+        print(f"❌ Error during data preparation: {str(e)}")
         import traceback
         traceback.print_exc()
